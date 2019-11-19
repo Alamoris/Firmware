@@ -40,7 +40,7 @@ int BlockLocalPositionEstimator::flowMeasure(Vector<float, n_y_flow> &y)
 		return -1;
 	}
 
-	if ((fabs(_sub_att.get().rollspeed) > 8.0f || fabs(_sub_att.get().pitchspeed) > 8.0f)) {
+	if ((fabs(_sub_angular_velocity.get().xyz[0]) > 8.0f || fabs(_sub_angular_velocity.get().xyz[1]) > 8.0f)) {
 		return -1;
 	}
 
