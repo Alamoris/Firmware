@@ -46,142 +46,61 @@
 #include <drivers/device/device.h>
 #include <drivers/drv_hrt.h>
 #include <arch/board/board.h>
+
 #include <uORB/uORB.h>
-#include <uORB/topics/vehicle_command.h>
-#include <uORB/topics/actuator_controls.h>
-#include <uORB/topics/wind_estimate.h>
-#include <uORB/topics/parameter_update.h>
-#include <uORB/topics/vehicle_global_position.h>
-#include <parameters/param.h>
+#include <uORB/topics/position_setpoint_triplet.h>
 #include <systemlib/err.h>
 #include <systemlib/mavlink_log.h>
-#include <lib/ecl/geo/geo.h>
-#include <dataman/dataman.h>
 #include <mathlib/mathlib.h>
-#include <matrix/math.hpp>
-
-using matrix::wrap_pi;
 
 
 extern "C" __EXPORT int trajectory_control_main(int argc, char *argv[]);
 
-class BottleDrop
+#define FILE_PATH "rootfs/fs/microsd/spiral_anim.txt"
+
+class TrajectoryControl
 {
 public:
-	/**
-	 * Constructor
-	 */
-	BottleDrop();
+	TrajectoryControl();
 
-	/**
-	 * Destructor, also kills task.
-	 */
-	~BottleDrop();
-
-	/**
-	 * Start the task.
-	 *
-	 * @return		OK on success.
-	 */
 	int		start();
-
-	/**
-	 * Display status.
-	 */
-	void		status();
-
-	void		open_bay();
-	void		close_bay();
-	void		drop();
-	void		lock_release();
-
+	
+	bool		update_buffer();
 private:
 	bool		_task_should_exit;		/**< if true, task should exit */
 	int		_main_task;			/**< handle for task */
 	orb_advert_t	_mavlink_log_pub;
 
-	int		_command_sub;
-	int		_wind_estimate_sub;
-	struct vehicle_command_s	_command;
-	struct vehicle_global_position_s _global_pos;
-	map_projection_reference_s ref;
 
-	orb_advert_t	_actuator_pub;
-	struct actuator_controls_s _actuators;
 
-	bool		_drop_approval;
-	hrt_abstime	_doors_opened;
-	hrt_abstime	_drop_time;
-
-	float		_alt_clearance;
-
-	struct position_s {
-		double lat;	///< degrees
-		double lon;	///< degrees
-		float alt;	///< m
-	} _target_position, _drop_position;
-
-	enum DROP_STATE {
-		DROP_STATE_INIT = 0,
-		DROP_STATE_TARGET_VALID,
-		DROP_STATE_TARGET_SET,
-		DROP_STATE_BAY_OPEN,
-		DROP_STATE_DROPPED,
-		DROP_STATE_BAY_CLOSED
-	} _drop_state;
-
-	struct mission_s	_onboard_mission;
-	orb_advert_t		_onboard_mission_pub;
+	struct position_setpoint_triplet_s		_pos_sp_triplet;
+	struct trajectory_s {
+		int numb;
+		double x;
+		double y;
+		double z;
+	} current_trajectory_setpoint;
 
 	void		task_main();
 
-	void		handle_command(struct vehicle_command_s *cmd);
-
-	void		answer_command(struct vehicle_command_s *cmd, unsigned result);
-
-	/**
-	 * Set the actuators
-	 */
-	int		actuators_publish();
-
-	/**
-	 * Shim for calling task_main from task_create.
-	 */
 	static int	task_main_trampoline(int argc, char *argv[]);
 };
 
 namespace trajectory_control
 {
-BottleDrop	*g_trajectory_control;
+TrajectoryControl	*g_trajectory_control;
 }
 
-BottleDrop::BottleDrop() :
-
+TrajectoryControl::TrajectoryControl() :
 	_task_should_exit(false),
 	_main_task(-1),
-	_mavlink_log_pub(nullptr),
-	_command_sub(-1),
-	_wind_estimate_sub(-1),
-	_command {},
-	_global_pos {},
-	ref {},
-	_actuator_pub(nullptr),
-	_actuators {},
-	_drop_approval(false),
-	_doors_opened(0),
-	_drop_time(0),
-	_alt_clearance(70.0f),
-	_target_position {},
-	_drop_position {},
-	_drop_state(DROP_STATE_INIT),
-	_onboard_mission {},
-	_onboard_mission_pub(nullptr)
+	_mavlink_log_pub(nullptr)
 {
-	_onboard_mission.dataman_id = DM_KEY_WAYPOINTS_ONBOARD;
+	//init = 0.0f;
 }
 
 int
-BottleDrop::start()
+TrajectoryControl::start()
 {
 	ASSERT(_main_task == -1);
 
@@ -190,7 +109,7 @@ BottleDrop::start()
 					SCHED_DEFAULT,
 					SCHED_PRIORITY_DEFAULT + 15,
 					1500,
-					(px4_main_t)&BottleDrop::task_main_trampoline,
+					(px4_main_t)&TrajectoryControl::task_main_trampoline,
 					nullptr);
 
 	if (_main_task < 0) {
@@ -203,23 +122,54 @@ BottleDrop::start()
 
 
 void
-BottleDrop::task_main()
+TrajectoryControl::task_main()
 {
-
 	mavlink_log_info(&_mavlink_log_pub, "[trajectory_control] started");
 
-	while (!_task_should_exit) {
+	// trajectory_s sp_buffer [20];
+	// bool update_buffer = True;
+	FILE *trajectory_file = fopen(FILE_PATH, "r");
 
+	int numb;
+	float x, y, z;
+	
+	while (!_task_should_exit) {
+		if(feof(trajectory_file))
+		{
+			warnx("Trajectory final");
+
+			_main_task = -1;
+			fclose(trajectory_file);
+			_exit(0);
+		}
+
+		if(fscanf(trajectory_file, "%d %f %f %f", &numb, &x, &y, &z) == 4)
+		{
+			current_trajectory_setpoint.num = numb;
+			current_trajectory_setpoint.x = x;
+			current_trajectory_setpoint.y = y;
+			current_trajectory_setpoint.z = z;
+			PX4_INFO("num: %d, x: %f, y: %f, z: %f", (int)numb, (double)x, (double)y, (double)z);
+		}
 	}
 
 	warnx("exiting.");
 
+
+	fclose(trajectory_file);
 	_main_task = -1;
 	_exit(0);
 }
 
+/*
+void
+TrajectoryControl::update_buffer()
+{
+	
+}*/
+
 int
-BottleDrop::task_main_trampoline(int argc, char *argv[])
+TrajectoryControl::task_main_trampoline(int argc, char *argv[])
 {
 	trajectory_control::g_trajectory_control->task_main();
 	return 0;
@@ -242,7 +192,7 @@ int trajectory_control_main(int argc, char *argv[])
 			errx(1, "already running");
 		}
 
-		trajectory_control::g_trajectory_control = new BottleDrop;
+		trajectory_control::g_trajectory_control = new TrajectoryControl;
 
 		if (trajectory_control::g_trajectory_control == nullptr) {
 			errx(1, "alloc failed");
@@ -258,29 +208,20 @@ int trajectory_control_main(int argc, char *argv[])
 	}
 
 	if (trajectory_control::g_trajectory_control == nullptr) {
-		errx(1, "not running");
+		PX4_INFO("Module not running");
 	}
 
 	if (!strcmp(argv[1], "stop")) {
 		delete trajectory_control::g_trajectory_control;
 		trajectory_control::g_trajectory_control = nullptr;
 
-	} else if (!strcmp(argv[1], "status")) {
+	} else if (!strcmp(argv[1], "help")) {
+		PX4_INFO("Enter 'start' to enable trajectory control module");
+
+	} /*else if (!strcmp(argv[1], "status")) {
 		trajectory_control::g_trajectory_control->status();
 
-	} else if (!strcmp(argv[1], "drop")) {
-		trajectory_control::g_trajectory_control->drop();
-
-	} else if (!strcmp(argv[1], "open")) {
-		trajectory_control::g_trajectory_control->open_bay();
-
-	} else if (!strcmp(argv[1], "close")) {
-		trajectory_control::g_trajectory_control->close_bay();
-
-	} else if (!strcmp(argv[1], "lock")) {
-		trajectory_control::g_trajectory_control->lock_release();
-
-	} else {
+	} */else {
 		usage();
 	}
 

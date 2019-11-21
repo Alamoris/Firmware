@@ -70,6 +70,7 @@ set(config_module_list
 	modules/navigator
 	modules/replay
 	modules/simulator
+	modules/trajectory_control
 	#modules/uavcan
 
 	#
