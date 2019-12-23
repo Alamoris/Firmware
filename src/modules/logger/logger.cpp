@@ -663,7 +663,8 @@ void Logger::add_default_topics()
 	add_topic("vehicle_attitude_groundtruth", 10);
 	add_topic("vehicle_global_position_groundtruth", 100);
 	add_topic("vehicle_local_position_groundtruth", 100);
-	add_topic("vehicle_roi");
+	add_topic("vehicle_local_position_setpoint", 100);
+	add_topic("vehicle_local_position", 100);
 #endif
 }
 

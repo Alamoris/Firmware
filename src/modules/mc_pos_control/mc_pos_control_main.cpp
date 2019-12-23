@@ -68,6 +68,7 @@
 #include <uORB/topics/vehicle_local_position.h>
 #include <uORB/topics/vehicle_local_position_setpoint.h>
 #include <uORB/topics/vehicle_status.h>
+#include <uORB/topics/trajectory_point.h>
 
 #include <float.h>
 #include <lib/ecl/geo/geo.h>
@@ -307,6 +308,9 @@ private:
 	uint8_t _xy_reset_counter;
 	uint8_t _heading_reset_counter;
 
+	orb_advert_t trajectory_point_pub;
+	struct trajectory_point_s trajectory_s;
+
 	matrix::Dcmf _R_setpoint;
 
 	/**
@@ -482,7 +486,9 @@ MulticopterPositionControl::MulticopterPositionControl() :
 	_takeoff_vel_limit(0.0f),
 	_z_reset_counter(0),
 	_xy_reset_counter(0),
-	_heading_reset_counter(0)
+	_heading_reset_counter(0),
+	trajectory_point_pub(nullptr),
+	trajectory_s{}
 {
 	/* Make the attitude quaternion valid */
 	_att.q[0] = 1.0f;
@@ -1479,7 +1485,6 @@ void
 MulticopterPositionControl::control_offboard()
 {
 	if (_pos_sp_triplet.current.valid) {
-
 		if (_control_mode.flag_control_position_enabled && _pos_sp_triplet.current.position_valid) {
 			/* control position */
 			_pos_sp(0) = _pos_sp_triplet.current.x;
@@ -1510,6 +1515,10 @@ MulticopterPositionControl::control_offboard()
 
 				if (_pos_sp_triplet.current.velocity_frame == position_setpoint_s::VELOCITY_FRAME_LOCAL_NED) {
 					/* set position setpoint move rate */
+					/* logging x, y coords, because setpoint_position_trippled doesn't logging in jmavsim*/
+					_pos_sp(0) = _pos_sp_triplet.current.x;
+					_pos_sp(1) = _pos_sp_triplet.current.y;
+
 					_vel_sp(0) = _pos_sp_triplet.current.vx;
 					_vel_sp(1) = _pos_sp_triplet.current.vy;
 
@@ -2564,7 +2573,6 @@ MulticopterPositionControl::calculate_thrust_setpoint()
 	}
 
 	if (_control_mode.flag_control_velocity_enabled || _control_mode.flag_control_acceleration_enabled) {
-
 		/* limit max tilt */
 		if (thr_min >= 0.0f && tilt_max < M_PI_F / 2.0f - 0.05f) {
 			/* absolute horizontal thrust */
@@ -2970,6 +2978,9 @@ MulticopterPositionControl::task_main()
 
 		poll_subscriptions();
 
+		//PX4_INFO("current_septoint -- valid: %d, x: %f, y: %f, z: %f ", (int)_pos_sp_triplet.current.valid, (double)_pos_sp_triplet.current.x, (double)_pos_sp_triplet.current.y, (double)_pos_sp_triplet.current.z);
+		//PX4_INFO("current_septoint -- valid: %d, vx: %f, vy: %f, vz: %f ", (int)_pos_sp_triplet.current.valid, (double)_pos_sp_triplet.current.vx, (double)_pos_sp_triplet.current.vy, (double)_pos_sp_triplet.current.vz);
+
 		parameters_update(false);
 
 		hrt_abstime t = hrt_absolute_time();
@@ -3182,6 +3193,13 @@ MulticopterPositionControl::task_main()
 
 				do_control();
 
+				trajectory_s.time = hrt_absolute_time();
+				if (trajectory_point_pub != nullptr) {
+					orb_publish(ORB_ID(trajectory_point), trajectory_point_pub, &trajectory_s);
+				} else {
+					trajectory_point_pub = orb_advertise(ORB_ID(trajectory_point), &trajectory_s);
+				}
+
 				/* fill local position, velocity and thrust setpoint */
 				_local_pos_sp.timestamp = hrt_absolute_time();
 				_local_pos_sp.x = _pos_sp(0);
@@ -3215,7 +3233,6 @@ MulticopterPositionControl::task_main()
 
 			/* generate attitude setpoint from manual controls */
 			if (_control_mode.flag_control_manual_enabled && _control_mode.flag_control_attitude_enabled) {
-
 				generate_attitude_setpoint();
 
 			} else {
@@ -3237,7 +3254,6 @@ MulticopterPositionControl::task_main()
 			      !(_control_mode.flag_control_position_enabled ||
 				_control_mode.flag_control_velocity_enabled ||
 				_control_mode.flag_control_acceleration_enabled))) {
-
 				if (_att_sp_pub != nullptr) {
 					orb_publish(_attitude_setpoint_id, _att_sp_pub, &_att_sp);
 
