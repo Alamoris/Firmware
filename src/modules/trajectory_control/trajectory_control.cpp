@@ -66,7 +66,7 @@
 
 extern "C" __EXPORT int trajectory_control_main(int argc, char *argv[]);
 
-#define FILE_PATH "rootfs/fs/microsd/eight.txt"
+#define FILE_PATH "rootfs/fs/microsd/spiral_anim_v2.txt"
 
 class TrajectoryControl
 {
@@ -85,7 +85,7 @@ private:
 	int		position_setpoint_sub;
 	orb_advert_t	next_point_pub;
 
-	struct	trajectory_point_s		next_trajectory_setpoint, test_sp;
+	struct	trajectory_point_s		next_trajectory_setpoint;
 	int		trajectory_point_sub;
 
 	orb_advert_t	_vehicle_command_pub;
@@ -110,7 +110,7 @@ private:
 	void		publish_offboard_control();
 	void		set_offboard_mode();
 	void		arm_copter();
-	void		publish_sp_triplet();
+	void		publish_sp_triplet(position_setpoint_triplet_s _pos_sp);
 
 	bool		flight_start;
 
@@ -129,7 +129,6 @@ TrajectoryControl::TrajectoryControl() :
 	position_setpoint_sub(-1),
 	next_point_pub(nullptr),
 	next_trajectory_setpoint{},
-	test_sp{},
 	trajectory_point_sub(-1),
 	_vehicle_command_pub(nullptr),
 	_vehicle_command_sub(-1),
@@ -212,8 +211,8 @@ TrajectoryControl::task_main()
 	int circle_index = 0;
 
 	int setpoint_buffer_size = 5;
-	position_setpoint_s setpoint_buffer[setpoint_buffer_size];
-	int setpoint_read_index = 1
+	position_setpoint_triplet_s setpoint_buffer[setpoint_buffer_size];
+	int setpoint_read_index = 0;
 	int setpoint_write_index = 0;  
 
 
@@ -251,15 +250,39 @@ TrajectoryControl::task_main()
 				_task_should_exit = true;
 			}
 
+			if ((setpoint_write_index + 1) % setpoint_buffer_size != setpoint_read_index) {
+				if (fgets(str, 50, trajectory_file)) {
+					if (sscanf(str, "%f %f %f %f %f %f", &x, &y, &z, &vx, &vy, &vz) == 6) {
+						circle_index = (circle_index + 1) % circle_buffer_size;
+						next_pos_sp.current.x = x;
+						next_pos_sp.current.y = y;
+						next_pos_sp.current.z = z - takeoff_z;
+						next_pos_sp.current.vx = vx + vel_p_pid[0] * circle_buffer[circle_index][0];
+						next_pos_sp.current.vy = vy + vel_p_pid[1] * circle_buffer[circle_index][1];
+
+						circle_buffer[circle_index][0] = x - _vehicle_local_pos.x;
+						circle_buffer[circle_index][1] = y - _vehicle_local_pos.y;
+						//PX4_INFO("read -- vx: %f, vy: %f, vz: %f", (double)next_pos_sp.current.vx, (double)next_pos_sp.current.vy, (double)next_pos_sp.current.vz);
+					}
+				}
+				setpoint_buffer[setpoint_write_index] = next_pos_sp;
+
+				PX4_INFO("Prev setpoint write index: %d, read: %d", setpoint_write_index, setpoint_read_index);
+				setpoint_write_index = (setpoint_write_index + 1) % setpoint_buffer_size;
+				continue;
+			}
+
 			publish_offboard_control();
 
 			orb_copy(ORB_ID(vehicle_status), vehicle_status_sub, &_status);
 		
+			/* Armed and switch to offbooard mode */ 
 			if (_status.nav_state != vehicle_status_s::NAVIGATION_STATE_OFFBOARD) {
 				PX4_INFO("Copter in mode: %d. Try set OFFBOARD", _status.nav_state);
 				set_offboard_mode();
 				continue;
 			}
+
 			if (_status.arming_state != vehicle_status_s::ARMING_STATE_ARMED) {
 				/* TODO: publish vehicle command to arm copter */
 				PX4_INFO("copter not armed, state mode: %d", _status.arming_state);
@@ -292,40 +315,18 @@ TrajectoryControl::task_main()
 						next_pos_sp.current.vx = 0;
 						next_pos_sp.current.vy = 0;
 						next_pos_sp.current.z = current_z_sp;
-						publish_sp_triplet();
+						publish_sp_triplet(next_pos_sp);
 					} else {
 						takeoff = 0;
 					}
 					continue;
 				}
 
-				if (fgets(str, 50, trajectory_file)) {
-					/*if(sscanf(str, "%f %f %f", &x, &y, &z) == 4)
-					{
-						next_pos_sp.current.x = x;
-						next_pos_sp.current.y = y;
-						next_pos_sp.current.z = z;
-						PX4_INFO("read -- x: %f, y: %f, z: %f", (double)next_pos_sp.current.x, (double)next_pos_sp.current.y, (double)next_pos_sp.current.z);
-					}*/
+				publish_sp_triplet(setpoint_buffer[setpoint_read_index]);
+				PX4_INFO("Publish setpoint. timestamp:%d", hrt_absolute_time());
 
-					if(sscanf(str, "%f %f %f %f %f %f", &x, &y, &z, &vx, &vy, &vz) == 6)
-					{
-						circle_index = (circle_index + 1) % circle_buffer_size;
-						next_pos_sp.current.x = x;
-						next_pos_sp.current.y = y;
-						next_pos_sp.current.z = z - takeoff_z;
-						next_pos_sp.current.vx = vx + vel_p_pid[0] * circle_buffer[circle_index][0];
-						next_pos_sp.current.vy = vy + vel_p_pid[1] * circle_buffer[circle_index][1];
+				setpoint_read_index = (setpoint_read_index + 1) % setpoint_buffer_size;
 
-						circle_buffer[circle_index][0] = x - _vehicle_local_pos.x;
-						circle_buffer[circle_index][1] = y - _vehicle_local_pos.y;
-						PX4_INFO("Publish setpoint. timestamp:%d", hrt_absolute_time());
-						
-						//PX4_INFO("read -- vx: %f, vy: %f, vz: %f", (double)next_pos_sp.current.vx, (double)next_pos_sp.current.vy, (double)next_pos_sp.current.vz);
-					}
-				}
-
-				publish_sp_triplet();
 			}
 		}
 	}
@@ -336,7 +337,6 @@ TrajectoryControl::task_main()
 	fclose(trajectory_file);
 	_main_task = -1;
 }
-
 
 /*More info in commander.cpp 3615-3653*/
 void
@@ -352,26 +352,26 @@ TrajectoryControl::publish_offboard_control()
 }
 
 void
-TrajectoryControl::publish_sp_triplet()
+TrajectoryControl::publish_sp_triplet(position_setpoint_triplet_s _pos_sp)
 {
-	next_pos_sp.current.timestamp = hrt_absolute_time();
-	next_pos_sp.current.type = position_setpoint_s::SETPOINT_TYPE_POSITION;
-	next_pos_sp.current.velocity_frame = position_setpoint_s::VELOCITY_FRAME_LOCAL_NED;
-	next_pos_sp.current.valid = true;
-	next_pos_sp.next.valid = false;
-	next_pos_sp.previous.valid = false;
+	_pos_sp.current.timestamp = hrt_absolute_time();
+	_pos_sp.current.type = position_setpoint_s::SETPOINT_TYPE_POSITION;
+	_pos_sp.current.velocity_frame = position_setpoint_s::VELOCITY_FRAME_LOCAL_NED;
+	_pos_sp.current.valid = true;
+	_pos_sp.next.valid = false;
+	_pos_sp.previous.valid = false;
 
-	next_pos_sp.current.position_valid = false;
-	next_pos_sp.current.alt_valid = true;
-	next_pos_sp.current.velocity_valid = true;
-	next_pos_sp.current.acceleration_valid = false;
-	next_pos_sp.current.yaw_valid = false;
-	next_pos_sp.current.yawspeed_valid = false;
+	_pos_sp.current.position_valid = false;
+	_pos_sp.current.alt_valid = true;
+	_pos_sp.current.velocity_valid = true;
+	_pos_sp.current.acceleration_valid = false;
+	_pos_sp.current.yaw_valid = false;
+	_pos_sp.current.yawspeed_valid = false;
 	
 	if (position_setpoint_triplet_pub != nullptr) {
-		orb_publish(ORB_ID(position_setpoint_triplet), position_setpoint_triplet_pub, &next_pos_sp);
+		orb_publish(ORB_ID(position_setpoint_triplet), position_setpoint_triplet_pub, &_pos_sp);
 	} else {
-		position_setpoint_triplet_pub = orb_advertise(ORB_ID(position_setpoint_triplet), &next_pos_sp);
+		position_setpoint_triplet_pub = orb_advertise(ORB_ID(position_setpoint_triplet), &_pos_sp);
 	}
 }
 
