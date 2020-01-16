@@ -84,6 +84,7 @@
 #include "devices/src/ubx.h"
 #include "devices/src/mtk.h"
 #include "devices/src/ashtech.h"
+#include "devices/src/nmea.h"
 
 
 #define TIMEOUT_5HZ 500
@@ -693,6 +694,10 @@ GPS::run()
 
 			case GPS_DRIVER_MODE_ASHTECH:
 				_helper = new GPSDriverAshtech(&GPS::callback, this, &_report_gps_pos, _p_report_sat_info);
+				break;
+			
+			case GPS_DRIVER_MODE_NMEA:
+				_helper = new GPSDriverNMEA(&GPS::callback, this, &_report_gps_pos);
 				break;
 
 			default:
