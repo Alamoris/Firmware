@@ -89,10 +89,9 @@
 
 #define TIMEOUT_5HZ 500
 #define RATE_MEASUREMENT_PERIOD 5000000
-#define GPS_WAIT_BEFORE_READ	20		// ms, wait before reading to save read() calls
+#define GPS_WAIT_BEFORE_READ 20
 
 
-/* struct for dynamic allocation of satellite info data */
 struct GPS_Sat_Info {
 	struct satellite_info_s 	_data;
 };
@@ -637,7 +636,6 @@ GPS::run()
 
 	/* loop handling received serial bytes and also configuring in between */
 	while (!should_exit()) {
-
 		if (_fake_gps) {
 			_report_gps_pos = {};
 			_report_gps_pos.timestamp = hrt_absolute_time();
@@ -799,7 +797,7 @@ GPS::run()
 				}
 
 			} else {
-				usleep(500000);
+				usleep(50000);
 			}
 
 		}
@@ -869,6 +867,10 @@ GPS::print_status()
 
 		case GPS_DRIVER_MODE_ASHTECH:
 			PX4_INFO("protocol: ASHTECH");
+			break;
+		
+		case GPS_DRIVER_MODE_NMEA:
+			PX4_INFO("protocol: NMEA");
 			break;
 
 		default:
@@ -1079,6 +1081,9 @@ GPS *GPS::instantiate(int argc, char *argv[], Instance instance)
 
 			} else if (!strcmp(myoptarg, "ash")) {
 				mode = GPS_DRIVER_MODE_ASHTECH;
+
+			} else if (!strcmp(myoptarg, "nmea")) {
+				mode = GPS_DRIVER_MODE_NMEA;
 
 			} else {
 				PX4_ERR("unknown interface: %s", myoptarg);

@@ -36,13 +36,14 @@ px4_add_git_submodule(TARGET git_gps_devices PATH "devices")
 px4_add_module(
 	MODULE drivers__gps
 	MAIN gps
-	STACK_MAIN 1200
+	STACK_MAIN 1700
 	SRCS
 		gps.cpp
 		devices/src/gps_helper.cpp
 		devices/src/mtk.cpp
 		devices/src/ashtech.cpp
 		devices/src/ubx.cpp
+		devices/src/nmea.cpp
 	DEPENDS
 		git_gps_devices
 	)
