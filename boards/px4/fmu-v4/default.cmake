@@ -69,6 +69,7 @@ px4_add_board(
 		rover_pos_control
 		sensors
 		sih
+		trajectory_control
 		vmount
 		vtol_att_control
 
