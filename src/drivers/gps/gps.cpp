@@ -60,6 +60,7 @@
 #include "devices/src/ashtech.h"
 #include "devices/src/emlid_reach.h"
 #include "devices/src/mtk.h"
+#include "devices/src/nmea.h"
 #include "devices/src/ubx.h"
 
 #ifdef __PX4_LINUX
@@ -74,6 +75,7 @@ typedef enum {
 	GPS_DRIVER_MODE_UBX,
 	GPS_DRIVER_MODE_MTK,
 	GPS_DRIVER_MODE_ASHTECH,
+	GPS_DRIVER_MODE_NMEA,
 	GPS_DRIVER_MODE_EMLIDREACH
 } gps_driver_mode_t;
 
@@ -710,6 +712,10 @@ GPS::run()
 				_helper = new GPSDriverAshtech(&GPS::callback, this, &_report_gps_pos, _p_report_sat_info, heading_offset);
 				break;
 
+			case GPS_DRIVER_MODE_NMEA:
+				_helper = new GPSDriverNMEA(&GPS::callback, this, &_report_gps_pos);
+				break;
+
 			case GPS_DRIVER_MODE_EMLIDREACH:
 				_helper = new GPSDriverEmlidReach(&GPS::callback, this, &_report_gps_pos, _p_report_sat_info);
 				break;
@@ -822,7 +828,7 @@ GPS::run()
 				}
 
 			} else {
-				px4_usleep(500000);
+				px4_usleep(100000);
 			}
 
 		}
@@ -871,6 +877,10 @@ GPS::print_status()
 
 		case GPS_DRIVER_MODE_ASHTECH:
 			PX4_INFO("protocol: ASHTECH");
+			break;
+
+		case GPS_DRIVER_MODE_NMEA:
+			PX4_INFO("protocol: NMEA");
 			break;
 
 		case GPS_DRIVER_MODE_EMLIDREACH:
@@ -1176,6 +1186,9 @@ GPS *GPS::instantiate(int argc, char *argv[], Instance instance)
 
 			} else if (!strcmp(myoptarg, "ash")) {
 				mode = GPS_DRIVER_MODE_ASHTECH;
+
+			} else if (!strcmp(myoptarg, "nmea")) {
+				mode = GPS_DRIVER_MODE_NMEA;
 
 			} else if (!strcmp(myoptarg, "eml")) {
 				mode = GPS_DRIVER_MODE_EMLIDREACH;
