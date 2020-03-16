@@ -33,7 +33,7 @@
 px4_add_module(
 	MODULE modules_trajectory_control
 	MAIN trajectory_control
-	STACK_MAIN 2000
+	STACK_MAIN 4000
 	SRCS
 		trajectory_control.cpp
 	DEPENDS

@@ -37,19 +37,23 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <math.h>
-#include <poll.h>
 #include <time.h>
 #include <sys/ioctl.h>
 #include <drivers/device/device.h>
 #include <drivers/drv_hrt.h>
 #include <arch/board/board.h>
 
+#include <px4_getopt.h>
+
 #include <uORB/uORB.h>
+#include <uORB/Publication.hpp>
+#include <uORB/PublicationQueued.hpp>
+#include <uORB/Subscription.hpp>
+#include <uORB/SubscriptionCallback.hpp>
 #include <uORB/topics/vehicle_command.h>
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/position_setpoint_triplet.h>
@@ -66,7 +70,7 @@
 
 extern "C" __EXPORT int trajectory_control_main(int argc, char *argv[]);
 
-#define FILE_PATH "tmp/spiral_anim_v.txt"
+//#define FILE_PATH "spiral_anim_v.txt"
 
 class TrajectoryControl
 {
@@ -76,34 +80,29 @@ public:
 	int		start();
 
 	bool		publish_next_point();
+
+	char		file_name[20];
 private:
 	bool		_task_should_exit;		/**< if true, task should exit */
 	int		_main_task;			/**< handle for task */
 
 	orb_advert_t	_mavlink_log_pub;
 
-	int		position_setpoint_sub;
-	orb_advert_t	next_point_pub;
+	uORB::Publication<position_setpoint_triplet_s>		position_setpoint_triplet_pub{ORB_ID(position_setpoint_triplet)};
+	uORB::Publication<offboard_control_mode_s>		offboard_control_mode_pub{ORB_ID(offboard_control_mode)};
 
-	struct	trajectory_point_s		next_trajectory_setpoint;
-	int		trajectory_point_sub;
+	uORB::PublicationQueued<vehicle_command_s> 		_vehicle_command_pub{ORB_ID(vehicle_command)};
 
-	orb_advert_t	_vehicle_command_pub;
-	int		_vehicle_command_sub;
-	int		vehicle_status_sub;
-	struct	vehicle_status_s		_status;
+	uORB::Subscription	vehicle_status_sub{ORB_ID(vehicle_status)};
+	uORB::Subscription	_vehicle_local_pos_sub{ORB_ID(vehicle_local_position)};
+	uORB::Subscription	local_position_setpoint_sub{ORB_ID(vehicle_local_position_setpoint)};
 
-	orb_advert_t offboard_control_mode_pub;
+	struct position_setpoint_triplet_s	next_pos_sp;
 	struct	offboard_control_mode_s		offboard_control;
 
-	orb_advert_t position_setpoint_triplet_pub;
-	struct position_setpoint_triplet_s	next_pos_sp;
-
-	int		_vehicle_local_pos_sub;
+	struct	trajectory_point_s		local_position_setpoint;
+	struct	vehicle_status_s		_status;
 	struct	vehicle_local_position_s	_vehicle_local_pos;
-
-
-	//int task_start_time;
 
 	void		task_main();
 	void		offboard_and_arm();
@@ -111,8 +110,6 @@ private:
 	void		set_offboard_mode();
 	void		arm_copter();
 	void		publish_sp_triplet(position_setpoint_triplet_s _pos_sp);
-
-	bool		flight_start;
 
 	static int	task_main_trampoline(int argc, char *argv[]);
 };
@@ -123,26 +120,16 @@ TrajectoryControl	*g_trajectory_control;
 }
 
 TrajectoryControl::TrajectoryControl() :
+	file_name{"spiral_anim.txt"},
 	_task_should_exit(false),
 	_main_task(-1),
 	_mavlink_log_pub(nullptr),
-	position_setpoint_sub(-1),
-	next_point_pub(nullptr),
-	next_trajectory_setpoint{},
-	trajectory_point_sub(-1),
-	_vehicle_command_pub(nullptr),
-	_vehicle_command_sub(-1),
-	vehicle_status_sub(-1),
-	_status{},
-	offboard_control_mode_pub(nullptr),
-	offboard_control{},
-	position_setpoint_triplet_pub(nullptr),
 	next_pos_sp{},
-	_vehicle_local_pos_sub(-1),
+	offboard_control{},
+	local_position_setpoint{},
+	_status{},
 	_vehicle_local_pos{}
-	//task_start_time(hrt_absolute_time())
 {
-	flight_start = false;
 }
 
 int
@@ -152,7 +139,7 @@ TrajectoryControl::start()
 	_main_task = px4_task_spawn_cmd("trajectory_control",
 					SCHED_DEFAULT,
 					SCHED_PRIORITY_DEFAULT + 15,
-					1500,
+					4000,
 					(px4_main_t)&TrajectoryControl::task_main_trampoline,
 					nullptr);
 
@@ -165,23 +152,18 @@ TrajectoryControl::start()
 }
 
 
-
 void
 TrajectoryControl::task_main()
 {
 	mavlink_log_info(&_mavlink_log_pub, "[trajectory_control] started");
+	PX4_INFO("Start trajectory module");
 
-	//bool updated;
+	FILE *trajectory_file = fopen(file_name, "r");
 
-	position_setpoint_sub = orb_subscribe(ORB_ID(position_setpoint_triplet));
-	trajectory_point_sub = orb_subscribe(ORB_ID(trajectory_point));
-	_vehicle_command_sub = orb_subscribe(ORB_ID(vehicle_command));
-	vehicle_status_sub = orb_subscribe(ORB_ID(vehicle_status));
-	_vehicle_local_pos_sub = orb_subscribe(ORB_ID(vehicle_local_position));
+	float vel_p_pid_x = 1.8;
+	float vel_p_pid_y = 1.8; /*x, y. Params for speed < 1.5m/s*/
 
-	FILE *trajectory_file = fopen(FILE_PATH, "r");
-
-	float vel_p_pid[2] = {1.8, 1.8}; /*x, y. Params for speed < 1.5m/s*/
+	PX4_INFO("Init valiables");
 
 	bool takeoff = 1;
 	float takeoff_z = 1.5;
@@ -192,14 +174,13 @@ TrajectoryControl::task_main()
 	int time_delta_control = 70000; /*us. Params for speed < 1.5m/s*/
 	int pid_time = 4000;
 	int circle_buffer_size = ((time_delta_control / 5) / pid_time) + 1;
-	float circle_buffer[circle_buffer_size][2] = {{},{}};
+	float circle_buffer[circle_buffer_size][2] = {{0.0}, {0.0}};
 	int circle_index = 0;
 
 	int setpoint_buffer_size = 5;
 	position_setpoint_triplet_s setpoint_buffer[setpoint_buffer_size];
 	int setpoint_read_index = 0;
 	int setpoint_write_index = 0;
-
 
 	char str[50];
 	float x, y, z, vx, vy, vz;
@@ -208,29 +189,23 @@ TrajectoryControl::task_main()
 	offboard_control.ignore_bodyrate_x = 1;
 	offboard_control.ignore_bodyrate_y = 1;
 	offboard_control.ignore_bodyrate_z = 1;
-	offboard_control.ignore_position = 0;
+	offboard_control.ignore_position = 1;
 	offboard_control.ignore_velocity = 0;
 	offboard_control.ignore_acceleration_force = 1;
 	offboard_control.ignore_alt_hold = 0;
 
-	/*next_trajectory_setpoint.timestamp = hrt_absolute_time();
-	next_trajectory_setpoint.valid = true;
-
-
-	if (next_point_pub != nullptr) {
-		orb_publish(ORB_ID(trajectory_point), next_point_pub, &next_trajectory_setpoint);
-	} else {
-		next_point_pub = orb_advertise(ORB_ID(trajectory_point), &next_trajectory_setpoint);
-	}*/
-
 	int start_time = hrt_absolute_time();
 
-	orb_copy(ORB_ID(trajectory_point) ,trajectory_point_sub, &next_trajectory_setpoint);
-	int prev_time;
-	prev_time = next_trajectory_setpoint.time;
+	local_position_setpoint_sub.copy(&local_position_setpoint);
+	int prev_time = local_position_setpoint.timestamp;
 
+	/*Initialize setpoint*/
+	next_pos_sp.current.vx = 0;
+	next_pos_sp.current.vy = 0;
+	next_pos_sp.current.z = 0;
+	publish_sp_triplet(next_pos_sp);
+	mavlink_log_info(&_mavlink_log_pub, "[trajectory_control] go to task");
 	while (!_task_should_exit) {
-		PX4_INFO("Check feof");
 		if (feof(trajectory_file)) {
 			warnx("exiting by feof.");
 
@@ -238,19 +213,18 @@ TrajectoryControl::task_main()
 		}
 
 		if ((setpoint_write_index + 1) % setpoint_buffer_size != setpoint_read_index) {
-			PX4_INFO("Try read");
 			if (fgets(str, 50, trajectory_file)) {
 				if (sscanf(str, "%f %f %f %f %f %f", &x, &y, &z, &vx, &vy, &vz) == 6) {
 					circle_index = (circle_index + 1) % circle_buffer_size;
 					next_pos_sp.current.x = x;
 					next_pos_sp.current.y = y;
 					next_pos_sp.current.z = z - takeoff_z;
-					next_pos_sp.current.vx = vx + vel_p_pid[0] * circle_buffer[circle_index][0];
-					next_pos_sp.current.vy = vy + vel_p_pid[1] * circle_buffer[circle_index][1];
+					next_pos_sp.current.vx = vx + vel_p_pid_x * circle_buffer[circle_index][0];
+					next_pos_sp.current.vy = vy + vel_p_pid_y * circle_buffer[circle_index][1];
 
 					circle_buffer[circle_index][0] = x - _vehicle_local_pos.x;
 					circle_buffer[circle_index][1] = y - _vehicle_local_pos.y;
-					//PX4_INFO("read -- vx: %f, vy: %f, vz: %f", (double)next_pos_sp.current.vx, (double)next_pos_sp.current.vy, (double)next_pos_sp.current.vz);
+					PX4_INFO("read -- vx: %f, vy: %f, vz: %f", (double)next_pos_sp.current.vx, (double)next_pos_sp.current.vy, (double)next_pos_sp.current.vz);
 				}
 			}
 			setpoint_buffer[setpoint_write_index] = next_pos_sp;
@@ -262,15 +236,9 @@ TrajectoryControl::task_main()
 
 		publish_offboard_control();
 
-		orb_copy(ORB_ID(vehicle_status), vehicle_status_sub, &_status);
+		vehicle_status_sub.copy(&_status);
 
 		/* Armed and switch to offbooard mode */
-		if (_status.nav_state != vehicle_status_s::NAVIGATION_STATE_OFFBOARD) {
-			PX4_INFO("Copter in mode: %d. Try set OFFBOARD", (int)_status.nav_state);
-			set_offboard_mode();
-			continue;
-		}
-
 		if (_status.arming_state != vehicle_status_s::ARMING_STATE_ARMED) {
 			/* TODO: publish vehicle command to arm copter */
 			PX4_INFO("copter not armed, state mode: %d", (int)_status.arming_state);
@@ -279,17 +247,23 @@ TrajectoryControl::task_main()
 			continue;
 		}
 
-		orb_copy(ORB_ID(trajectory_point), trajectory_point_sub, &next_trajectory_setpoint);
-		int cur_time = next_trajectory_setpoint.time;
+		if (_status.nav_state != vehicle_status_s::NAVIGATION_STATE_OFFBOARD) {
+			PX4_INFO("Copter in mode: %d. Try set OFFBOARD", (int)_status.nav_state);
+			set_offboard_mode();
+			continue;
+		}
+
+		local_position_setpoint_sub.copy(&local_position_setpoint);
+		int cur_time = local_position_setpoint.timestamp;
 
 		//PX4_INFO("old_time-%d, current_time-%d", (int)prev_time, (int)next_trajectory_setpoint.time);
 		if (prev_time != cur_time) {
-			//PX4_INFO("Read next string with new_loc_pos take");
+			PX4_INFO("Read next string with new_loc_pos take");
 
-			prev_time = next_trajectory_setpoint.time;
+			prev_time = local_position_setpoint.timestamp;
 
 			// Copter takeoff
-			orb_copy(ORB_ID(vehicle_local_position), _vehicle_local_pos_sub, &_vehicle_local_pos);
+			_vehicle_local_pos_sub.copy(&_vehicle_local_pos);
 			if (takeoff == 1) {
 				if ((_vehicle_local_pos.z > -takeoff_z + z_threshold) || (_vehicle_local_pos.z < -takeoff_z - z_threshold)) {
 					PX4_INFO("Try takeoff");
@@ -314,7 +288,6 @@ TrajectoryControl::task_main()
 			PX4_INFO("Publish setpoint. timestamp:%d", (int)hrt_absolute_time());
 
 			setpoint_read_index = (setpoint_read_index + 1) % setpoint_buffer_size;
-
 		}
 	}
 
@@ -331,16 +304,13 @@ TrajectoryControl::publish_offboard_control()
 {
 	offboard_control.timestamp = hrt_absolute_time();
 
-	if (offboard_control_mode_pub != nullptr) {
-		orb_publish(ORB_ID(offboard_control_mode), offboard_control_mode_pub, &offboard_control);
-	} else {
-		offboard_control_mode_pub = orb_advertise(ORB_ID(offboard_control_mode), &offboard_control);
-	}
+	offboard_control_mode_pub.publish(offboard_control);
 }
 
 void
 TrajectoryControl::publish_sp_triplet(position_setpoint_triplet_s _pos_sp)
 {
+	PX4_INFO("Publish sp triplet");
 	_pos_sp.current.timestamp = hrt_absolute_time();
 	_pos_sp.current.type = position_setpoint_s::SETPOINT_TYPE_POSITION;
 	_pos_sp.current.velocity_frame = position_setpoint_s::VELOCITY_FRAME_LOCAL_NED;
@@ -355,11 +325,7 @@ TrajectoryControl::publish_sp_triplet(position_setpoint_triplet_s _pos_sp)
 	_pos_sp.current.yaw_valid = false;
 	_pos_sp.current.yawspeed_valid = false;
 
-	if (position_setpoint_triplet_pub != nullptr) {
-		orb_publish(ORB_ID(position_setpoint_triplet), position_setpoint_triplet_pub, &_pos_sp);
-	} else {
-		position_setpoint_triplet_pub = orb_advertise(ORB_ID(position_setpoint_triplet), &_pos_sp);
-	}
+	position_setpoint_triplet_pub.publish(_pos_sp);
 }
 
 void
@@ -376,18 +342,14 @@ TrajectoryControl::set_offboard_mode()
 		.param7 = 0.0f,
 		.command = vehicle_command_s::VEHICLE_CMD_DO_SET_MODE,
 		.target_system = _status.system_id,
-		.target_component = 0,
+		.target_component = _status.component_id,
 		.source_system = _status.system_id,
 		.source_component = _status.component_id,
-		.confirmation = false,
+		.confirmation = true,
 		.from_external = false
 	};
-	if (_vehicle_command_pub != nullptr) {
-		/* to arm watch commander.cpp 784+ and px4io.cpp 736*/
-		orb_publish(ORB_ID(vehicle_command), _vehicle_command_pub, &_command);
-	} else {
-		_vehicle_command_pub = orb_advertise(ORB_ID(vehicle_command), &_command);
-	}
+
+	_vehicle_command_pub.publish(_command);
 }
 
 
@@ -408,16 +370,11 @@ TrajectoryControl::arm_copter()
 		.target_component = _status.component_id,
 		.source_system = _status.system_id,
 		.source_component = _status.component_id,
-		.confirmation = false,
+		.confirmation = true,
 		.from_external = false
 	};
 
-	if (_vehicle_command_pub != nullptr) {
-		/* to arm watch commander.cpp 784+ and px4io.cpp 736*/
-		orb_publish(ORB_ID(vehicle_command), _vehicle_command_pub, &_command);
-	} else {
-		_vehicle_command_pub = orb_advertise(ORB_ID(vehicle_command), &_command);
-	}
+	_vehicle_command_pub.publish(_command);
 }
 
 int
@@ -427,33 +384,119 @@ TrajectoryControl::task_main_trampoline(int argc, char *argv[])
 	return 0;
 }
 
-static void usage()
+uORB::Publication<position_setpoint_triplet_s>		position_setpoint_pub{ORB_ID(position_setpoint_triplet)};
+
+void
+publish_sp(position_setpoint_triplet_s _pos_sp)
 {
-	errx(1, "usage: trajectory_control {start|stop|status}");
+	PX4_INFO("Publish sp triplet");
+	_pos_sp.current.timestamp = hrt_absolute_time();
+	_pos_sp.current.type = position_setpoint_s::SETPOINT_TYPE_POSITION;
+	_pos_sp.current.velocity_frame = position_setpoint_s::VELOCITY_FRAME_LOCAL_NED;
+	_pos_sp.current.valid = true;
+	_pos_sp.next.valid = false;
+	_pos_sp.previous.valid = false;
+
+	_pos_sp.current.position_valid = false;
+	_pos_sp.current.alt_valid = true;
+	_pos_sp.current.velocity_valid = true;
+	_pos_sp.current.acceleration_valid = false;
+	_pos_sp.current.yaw_valid = false;
+	_pos_sp.current.yawspeed_valid = false;
+
+	position_setpoint_pub.publish(_pos_sp);
+}
+
+void
+check_file(const char *path)
+{
+	PX4_INFO("Check file for read");
+	struct position_setpoint_triplet_s	next_pos_sp;
+	char file_path[50];
+	char str[50];
+	float x, y, z, vx, vy, vz;
+
+	int time_delta_control = 70000; /*us. Params for speed < 1.5m/s*/
+	int pid_time = 4000;
+	int circle_buffer_size = ((time_delta_control / 5) / pid_time) + 1;
+	float circle_buffer[circle_buffer_size][2] = {{0.0}, {0.0}};
+	int circle_index = 0;
+
+	int setpoint_buffer_size = 5;
+	position_setpoint_triplet_s setpoint_buffer[setpoint_buffer_size];
+	int setpoint_read_index = 0;
+	int setpoint_write_index = 0;
+
+	strncpy(file_path, path, sizeof(file_path));
+	file_path[sizeof(file_path) - 1] = '\0';
+	PX4_INFO("Try open file");
+	FILE *trajectory_file = fopen(file_path, "r");
+
+	if (trajectory_file) {
+		PX4_INFO("File opened, start reading");
+		PX4_INFO("Read 5 mesages from file");
+		for (int i = 0; i < 1000; i++) {
+			if (fgets(str, 50, trajectory_file)) {
+				if (sscanf(str, "%f %f %f %f %f %f", &x, &y, &z, &vx, &vy, &vz) == 6) {
+					PX4_INFO("Read message- x:%f, y:%f, z:%f, vx:%f, vy:%f, vz:%f", (double)x, (double)y, (double)z, (double)vx, (double)vy, (double)vz);
+					circle_index = (circle_index + 1) % circle_buffer_size;
+
+					next_pos_sp.current.x = x;
+					next_pos_sp.current.y = y;
+					next_pos_sp.current.z = z - 1;
+					next_pos_sp.current.vx = vx + 1 * circle_buffer[circle_index][0];
+					next_pos_sp.current.vy = vy + 1 * circle_buffer[circle_index][1];
+					circle_buffer[circle_index][0] = x;
+					circle_buffer[circle_index][1] = y;
+					//PX4_INFO("read -- vx: %f, vy: %f, vz: %f", (double)next_pos_sp.current.vx, (double)next_pos_sp.current.vy, (double)next_pos_sp.current.vz);
+				}
+			}
+
+			PX4_INFO("Prev setpoint write index: %d, read: %d", (int)setpoint_write_index, (int)setpoint_read_index);
+			setpoint_write_index = (setpoint_write_index + 1) % setpoint_buffer_size;
+
+			setpoint_buffer[setpoint_write_index] = next_pos_sp;
+			publish_sp(setpoint_buffer[setpoint_read_index]);
+			PX4_INFO("Publish setpoint. timestamp:%d", (int)hrt_absolute_time());
+
+			setpoint_read_index = (setpoint_read_index + 1) % setpoint_buffer_size;
+		}
+	} else {
+		PX4_INFO("Error trying to open file");
+	}
 }
 
 int trajectory_control_main(int argc, char *argv[])
 {
-	if (argc < 2) {
-		usage();
-	}
+	int myoptind = 1;
+	int ch;
+	const char *myoptarg = nullptr;
 
 	if (!strcmp(argv[1], "start")) {
 
 		if (trajectory_control::g_trajectory_control != nullptr) {
-			errx(1, "already running");
+			return 0;
 		}
 
 		trajectory_control::g_trajectory_control = new TrajectoryControl;
+		while ((ch = px4_getopt(argc, argv, "f:", &myoptind, &myoptarg)) != EOF) {
+			switch (ch) {
+			case 'f':
+				strncpy(trajectory_control::g_trajectory_control->file_name, myoptarg, 19);
+				/* enforce null termination */
+				trajectory_control::g_trajectory_control->file_name[19] = '\0';
+				break;
+			}
+		}
 
 		if (trajectory_control::g_trajectory_control == nullptr) {
-			errx(1, "alloc failed");
+			return 0;
 		}
 
 		if (OK != trajectory_control::g_trajectory_control->start()) {
 			delete trajectory_control::g_trajectory_control;
 			trajectory_control::g_trajectory_control = nullptr;
-			err(1, "start failed");
+			return 0;
 		}
 
 		return 0;
@@ -471,11 +514,20 @@ int trajectory_control_main(int argc, char *argv[])
 		PX4_INFO("Enter 'start' to enable trajectory control module");
 
 	} /*else if (!strcmp(argv[1], "status")) {
-		trajectory_control::g_trajectory_control->status();
-
-	} */else {
-		usage();
+		char dictionary[512];
+		char* dir = getcwd(dictionary, 512);
+		PX4_INFO("Path %s", dir);
+	}*/ else if (!strcmp(argv[1], "try")) {
+		while ((ch = px4_getopt(argc, argv, "f:", &myoptind, &myoptarg)) != EOF) {
+			switch (ch) {
+			case 'f':
+				check_file(myoptarg);
+				break;
+			}
+		}
+	} else {
+		PX4_ERR("usage: trajectory_control {start|stop|status|help}");
+		return 0;
 	}
-
 	return 0;
 }
