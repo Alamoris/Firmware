@@ -66,6 +66,7 @@ px4_add_board(
 		navigator
 		sensors
 		sih
+		trajectory_control
 		vmount
 		vtol_att_control
 		airspeed_selector

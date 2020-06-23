@@ -42,6 +42,7 @@
  */
 
 #include <float.h>
+#include <math.h>
 
 #include <drivers/drv_hrt.h>
 #include <lib/ecl/geo/geo.h>
@@ -53,7 +54,9 @@
 #include <px4_defines.h>
 #include <px4_posix.h>
 #include <px4_tasks.h>
+#include <px4_log.h>
 #include <uORB/Subscription.hpp>
+#include <uORB/topics/actuator_outputs.h>
 #include <uORB/topics/manual_control_setpoint.h>
 #include <uORB/topics/parameter_update.h>
 #include <uORB/topics/position_controller_status.h>
@@ -64,7 +67,9 @@
 #include <uORB/topics/vehicle_attitude_setpoint.h>
 #include <uORB/topics/vehicle_control_mode.h>
 #include <uORB/topics/vehicle_global_position.h>
+#include <uORB/topics/vehicle_gps_position.h>
 #include <uORB/topics/vehicle_local_position.h>
+#include <uORB/topics/debug_msg.h>
 #include <uORB/topics/actuator_controls.h>
 #include <uORB/topics/ekf2_timestamps.h>
 #include <uORB/uORB.h>
@@ -100,24 +105,33 @@ public:
 private:
 	orb_advert_t	_pos_ctrl_status_pub{nullptr};		/**< navigation capabilities publication */
 	orb_advert_t    _actuator_controls_pub{nullptr};	/**< actuator controls publication */
+	orb_advert_t	_debug_msg_pub{nullptr};
 
 	int		_control_mode_sub{-1};		/**< control mode subscription */
 	int		_global_pos_sub{-1};
+	int		_gps_pos_sub{-1};
 	int		_local_pos_sub{-1};
 	int		_manual_control_sub{-1};		/**< notification of manual control updates */
-	int		_params_sub{-1};			/**< notification of parameter updates */
 	int		_pos_sp_triplet_sub{-1};
-	int     _vehicle_attitude_sub{-1};
+	int		_vehicle_attitude_sub{-1};
 	int		_sensor_combined_sub{-1};
+	int		_actuator_outputs_sub{-1};
+
+	uORB::Subscription	_parameter_update_sub{ORB_ID(parameter_update)};
 
 	manual_control_setpoint_s		_manual{};			    /**< r/c channel data */
 	position_setpoint_triplet_s		_pos_sp_triplet{};		/**< triplet of mission items */
 	vehicle_control_mode_s			_control_mode{};		/**< control mode */
 	vehicle_global_position_s		_global_pos{};			/**< global vehicle position */
+	vehicle_gps_position_s			_gps_pos{};
+	vehicle_gps_position_s			_gps_prev{};
 	vehicle_local_position_s		_local_pos{};			/**< global vehicle position */
-	actuator_controls_s			    _act_controls{};		/**< direct control of actuators */
-	vehicle_attitude_s              _vehicle_att{};
-	sensor_combined_s				_sensor_combined{};
+	actuator_controls_s			_act_controls{};		/**< direct control of actuators */
+	vehicle_attitude_s			_vehicle_att{};
+	sensor_combined_s			_sensor_combined{};
+	debug_msg_s				_debug_msg{};
+	vehicle_local_position_s		_cur_local_pos{};
+	actuator_outputs_s			_actuator_outputs{};
 
 	SubscriptionData<vehicle_acceleration_s>		_vehicle_acceleration_sub{ORB_ID(vehicle_acceleration)};
 
@@ -132,9 +146,82 @@ private:
 	// estimator reset counters
 	uint8_t _pos_reset_counter{0};		// captures the number of times the estimator has reset the horizontal position
 
-	ECL_L1_Pos_Controller				_gnd_control;
+	ECL_L1_Pos_Controller			_gnd_control;
 
 	bool _waypoint_reached{false};
+
+	float xn[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+	float xn_cur[5];
+	float _v = 0;
+	float _w = 0;
+	int _time = hrt_absolute_time();
+	int iter = 0;
+
+	int prev_iter_time = hrt_absolute_time();
+	int freq = 0;
+	int freq_count = 71;
+
+	float _dt = 0.1;
+	float R = 0.075 / 2;
+	float ke = 440 / 1.7 * 0.075 / 2;
+	float tm = 0.6 * 0.2;
+	float L = 0.217;
+	float k = 1;
+	float kh = 15;
+	matrix::Vector2f observer_speed2d;
+	matrix::Vector3f observer_speed3d;
+
+	float filtered_cor[4] = {0.0f};
+
+	float dz[2];
+	float d_z[2];
+	float d_zf[2];
+	float _x = 0;
+	float _y = 0;
+	float _al = 0;
+	float h_conv = 0;
+	float pi = 3.14159265f;
+
+	// position convert
+	float yaw_offset = 0.0f;
+	float x_offset = 0.0f;
+	float y_offset = 0.0f;
+
+	//rover control pos
+
+	float kv_p = 0.4;
+	float kv_i = kv_p / tm;
+	float kw_p = 0.45;
+	float kw_i = kw_p / tm;
+
+	float v_lim = 0.20;
+	float w_lim = 0.40;
+	float dst_radius = 0.05;
+
+	matrix::Vector2f _prev_local_pos;
+
+	struct controls_data {
+		float x;
+		float y;
+		float angle;
+		float e_x;
+		float e_y;
+		float e_dst;
+		float e_ang;
+		float e_ang_dir;
+		float e_dist_dir;
+		float v_set_ul;
+		float w_set_ul;
+		float v_set;
+		float w_set;
+		float angle_s;
+		float vl;
+		float vr;
+		float v_i_value;
+		float w_i_value;
+	};
+
+	struct controls_data _inst;
 
 	enum UGV_POSCTRL_MODE {
 		UGV_POSCTRL_MODE_AUTO,
@@ -167,7 +254,7 @@ private:
 	/**
 	 * Update our local parameter cache.
 	 */
-	void parameters_update(int parameter_update_sub, bool force = false);
+	void parameters_update(bool force = false);
 
 	void		manual_control_setpoint_poll();
 	void		position_setpoint_triplet_poll();
@@ -180,4 +267,7 @@ private:
 	bool		control_position(const matrix::Vector2f &global_pos, const matrix::Vector3f &ground_speed,
 					 const position_setpoint_triplet_s &_pos_sp_triplet);
 
+	bool		rover_control_position(const matrix::Vector2f &current_position, const matrix::Vector2f &setpoint, float observer_angle);
+	void		observer(const matrix::Vector2f conver_local_position, const matrix::Vector2f actuato_outputs);
+	float		convert_angle(const float angle);
 };
