@@ -341,9 +341,11 @@ void AttitudeEstimatorQ::task_main()
 		// Update vision and motion capture heading
 		_ext_hdg_good = false;
 		vehicle_odometry_s vision;
+		bool vision_updated = false;
+		orb_check(_vision_odom_sub, &vision_updated);
 
-		if (_vision_odom_sub.updated()) {
-			if (_vision_odom_sub.copy(&vision)) {
+		if (vision_updated) {
+			if (orb_copy(ORB_ID(vehicle_vision_attitude), _vision_odom_sub, &vision) == PX4_OK) {
 				// validation check for vision attitude data
 				bool vision_att_valid = PX4_ISFINITE(vision.q[0])
 							&& (PX4_ISFINITE(vision.pose_covariance[vision.COVARIANCE_MATRIX_ROLL_VARIANCE]) ? sqrtf(fmaxf(
@@ -364,9 +366,11 @@ void AttitudeEstimatorQ::task_main()
 		}
 
 		vehicle_odometry_s mocap;
+		bool mocap_updated = false;
+		orb_check(_mocap_odom_sub, &mocap_updated);
 
-		if (_mocap_odom_sub.updated()) {
-			if (_mocap_odom_sub.copy(&mocap)) {
+		if (mocap_updated) {
+			if (orb_copy(ORB_ID(vehicle_mocap_odometry), _mocap_odom_sub, &mocap) == PX4_OK) {
 				// validation check for mocap attitude data
 				bool mocap_att_valid = PX4_ISFINITE(mocap.q[0])
 						       && (PX4_ISFINITE(mocap.pose_covariance[mocap.COVARIANCE_MATRIX_ROLL_VARIANCE]) ? sqrtf(fmaxf(
@@ -395,7 +399,10 @@ void AttitudeEstimatorQ::task_main()
 			_ext_hdg_good = mocap.timestamp > 0 && (hrt_elapsed_time(&mocap.timestamp) < 500000);
 		}
 
-		if (_global_pos_sub.updated()) {
+		bool gpos_updated = false;
+		orb_check(_global_pos_sub, &gpos_updated);
+
+		if (gpos_updated) {
 			vehicle_global_position_s gpos;
 
 			if (orb_copy(ORB_ID(vehicle_global_position), _global_pos_sub, &gpos) == PX4_OK) {
